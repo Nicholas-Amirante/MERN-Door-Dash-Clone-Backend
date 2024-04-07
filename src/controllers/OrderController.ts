@@ -5,7 +5,20 @@ import Order from "../models/order";
 
 const STRIPE = new Stripe(process.env.STRIPE_API_KEY as string);
 const FRONTEND_URL = process.env.FRONTEND_URL as string;
-const STRIPE_ENDPOINT_SECRET=process.env.STRIPE_WEBHOOK_SECRET as string;
+const STRIPE_ENDPOINT_SECRET = process.env.STRIPE_WEBHOOK_SECRET as string;
+
+
+const getMyOrders = async (req: Request, res: Response) => {
+  try {
+    const orders = await Order.find({user: req.userId}).populate("restaurant").populate("user");
+
+    res.json(orders);
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "something went wrong"})
+  }
+}
+
 
 type CheckoutSessionRequest = {
   cartItems: {
@@ -23,30 +36,43 @@ type CheckoutSessionRequest = {
 };
 
 const stripeWebhookHandler = async (req: Request, res: Response) => {
- 
   let event;
- 
+
   try {
-  const sig = req.headers["stripe-signature"]
-  event = STRIPE.webhooks.constructEvent(req.body, sig as string, STRIPE_ENDPOINT_SECRET)
- } catch (error: any) {
-  console.log(error);
-   return res.status(400).send(`webhook error: ${error.message}`)
- }
-
- if(event.type === "checkout.session.completed") {
-  const order = await Order.findById(event.data.object.metadata?.orderId);
-
-  if(!order) {
-    return res.status(404).json({ message: "Order not found" });
+    const sig = req.headers["stripe-signature"];
+    event = STRIPE.webhooks.constructEvent(req.body, sig as string, STRIPE_ENDPOINT_SECRET);
+  } catch (error: any) {
+    console.error("Error parsing webhook event:", error);
+    console.error("Raw request body:", req.body); // Log raw request body for debugging
+    return res.status(400).send(`Webhook error: ${error.message}`);
   }
-  order.totalAmount = event.data.object.amount_total;
-  order.status = "paid";
 
-  await order.save();
- }
+  if (event.type === "checkout.session.completed") {
+    try {
+      const orderId = event.data.object.metadata?.orderId;
+      if (!orderId) {
+        console.error("Missing orderId in webhook metadata");
+        return res.status(400).json({ message: "Missing orderId in webhook metadata" });
+      }
 
- res.status(200).send();
+      const order = await Order.findById(orderId);
+      if (!order) {
+        console.error("Order not found:", orderId);
+        return res.status(404).json({ message: "Order not found" });
+      }
+
+      order.totalAmount = event.data.object.amount_total;
+      order.status = "paid";
+
+      await order.save();
+      console.log("Order marked as paid:", orderId);
+    } catch (error) {
+      console.error("Error updating order status:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  }
+
+  res.status(200).send();
 };
 
 const createCheckoutSession = async (req: Request, res: Response) => {
@@ -79,7 +105,7 @@ const createCheckoutSession = async (req: Request, res: Response) => {
 
     res.json({ url: session.url });
   } catch (error) {
-    console.log(error);
+    console.error(error);
     res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -140,4 +166,4 @@ const createSession = async (
   }
 };
 
-export { createCheckoutSession, stripeWebhookHandler };
+export { getMyOrders, createCheckoutSession, stripeWebhookHandler };
